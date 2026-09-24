@@ -1,0 +1,13 @@
+.venv/
+venv/
+.git/
+.github/
+tests/
+docs/
+infra/
+scripts/
+*.md
+.pytest_cache/
+__pycache__/
+requirements-dev.txt
+local.settings.json
