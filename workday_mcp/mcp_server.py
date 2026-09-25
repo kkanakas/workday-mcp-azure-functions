@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import os
+from urllib.parse import urlsplit
 
+import anyio.to_thread
 from mcp.server.mcpserver import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -47,6 +50,60 @@ class AuthContext:
             self.obo_resolver = GraphOboResolver(msal_app)
 
 
+# Loopback Host/Origin values the MCP SDK allows by default; kept so local
+# `func start` / health probes keep working alongside the deployed host.
+_LOOPBACK_HOSTS = ("127.0.0.1:*", "localhost:*", "[::1]:*")
+_LOOPBACK_ORIGINS = ("http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*")
+
+
+def resolve_allowed_hosts(resource_url: str) -> list[str]:
+    """Host header values the MCP transport should accept.
+
+    The SDK's DNS-rebinding protection only allows loopback hosts by default,
+    which makes every request to a real Azure Functions hostname return HTTP
+    421. MCP_ALLOWED_HOSTS (comma-separated) overrides; otherwise the host of
+    MCP_RESOURCE_URL is used.
+    """
+    configured = [host.strip() for host in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",") if host.strip()]
+    if not configured:
+        netloc = urlsplit(resource_url).netloc
+        configured = [netloc] if netloc else []
+
+    hosts: list[str] = []
+    for host in configured:
+        candidates = [host]
+        if ":" not in host:
+            # Also accept the same host with any explicit port (e.g. :443).
+            candidates.append(f"{host}:*")
+        for candidate in candidates:
+            if candidate not in hosts:
+                hosts.append(candidate)
+
+    for loopback in _LOOPBACK_HOSTS:
+        if loopback not in hosts:
+            hosts.append(loopback)
+    return hosts
+
+
+def build_transport_security(resource_url: str) -> TransportSecuritySettings:
+    """DNS-rebinding protection kept ON, but with the real host allowed."""
+    hosts = resolve_allowed_hosts(resource_url)
+    origins: list[str] = []
+    for host in hosts:
+        for origin in (f"https://{host}", f"http://{host}"):
+            if origin not in origins:
+                origins.append(origin)
+    for origin in _LOOPBACK_ORIGINS:
+        if origin not in origins:
+            origins.append(origin)
+
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=hosts,
+        allowed_origins=origins,
+    )
+
+
 def build_workday_client() -> WorkdayClient:
     return WorkdayClient(
         tenant_base_url=os.environ["WORKDAY_TENANT_BASE_URL"],
@@ -56,13 +113,27 @@ def build_workday_client() -> WorkdayClient:
     )
 
 
+PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource"
+
+
+def protected_resource_metadata_url(resource_url: str) -> str:
+    """Absolute URL of the metadata document, derived from resource_url's origin.
+
+    `resource_url` identifies the protected resource and may carry a path (e.g.
+    `https://host/mcp`), but the metadata route lives at the app root, so only
+    the scheme+host are reused.
+    """
+    parts = urlsplit(resource_url)
+    return f"{parts.scheme}://{parts.netloc}{PROTECTED_RESOURCE_METADATA_PATH}"
+
+
 class EntraAuthMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, auth_context: AuthContext):
         super().__init__(app)
         self._auth = auth_context
 
     async def dispatch(self, request: Request, call_next):
-        if request.url.path == "/.well-known/oauth-protected-resource":
+        if request.url.path == PROTECTED_RESOURCE_METADATA_PATH:
             return await call_next(request)
 
         if self._auth.dev_skip_auth:
@@ -78,13 +149,15 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
             return self._unauthorized("missing bearer token")
         raw_token = header.split(" ", 1)[1]
 
+        # Both calls do blocking network I/O (JWKS fetch; MSAL + httpx call to
+        # Graph), so they must not run inline on the ASGI event loop.
         try:
-            self._auth.validator.validate(raw_token)
+            await anyio.to_thread.run_sync(self._auth.validator.validate, raw_token)
         except TokenValidationError as exc:
             return self._unauthorized(str(exc))
 
         try:
-            resolved = self._auth.obo_resolver.resolve(raw_token)
+            resolved = await anyio.to_thread.run_sync(self._auth.obo_resolver.resolve, raw_token)
         except OboExchangeError as exc:
             return self._unauthorized(f"identity resolution failed: {exc}")
 
@@ -99,13 +172,17 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
         return JSONResponse(
             {"error": "unauthorized", "detail": detail},
             status_code=401,
-            headers={
-                "WWW-Authenticate": (
-                    'Bearer resource_metadata="'
-                    f'{self._auth.resource_url.rstrip("/")}/.well-known/oauth-protected-resource"'
-                )
-            },
+            headers={"WWW-Authenticate": f'Bearer resource_metadata="{self.resource_metadata_url}"'},
         )
+
+    @property
+    def resource_metadata_url(self) -> str:
+        """Where the protected-resource metadata document is actually served.
+
+        The route is registered at the app root, not under the resource URL's
+        path (e.g. `/mcp`), so advertise the origin of resource_url only.
+        """
+        return protected_resource_metadata_url(self._auth.resource_url)
 
 
 def build_mcp_app(auth_context: AuthContext | None = None, workday_client: WorkdayClient | None = None):
@@ -134,7 +211,7 @@ def build_mcp_app(auth_context: AuthContext | None = None, workday_client: Workd
         """Return the caller's own organization/team structure."""
         return get_organization(client)
 
-    @mcp.custom_route("/.well-known/oauth-protected-resource", methods=["GET"])
+    @mcp.custom_route(PROTECTED_RESOURCE_METADATA_PATH, methods=["GET"])
     async def protected_resource_metadata(request):
         return JSONResponse(
             build_protected_resource_metadata(
@@ -144,6 +221,9 @@ def build_mcp_app(auth_context: AuthContext | None = None, workday_client: Workd
             )
         )
 
-    app = mcp.streamable_http_app()
+    # Without explicit transport_security the SDK auto-enables DNS-rebinding
+    # protection with a loopback-only Host allow-list, which 421s every request
+    # to a real Azure Functions hostname.
+    app = mcp.streamable_http_app(transport_security=build_transport_security(auth_context.resource_url))
     app.add_middleware(EntraAuthMiddleware, auth_context=auth_context)
     return app
