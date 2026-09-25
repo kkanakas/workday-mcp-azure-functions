@@ -33,7 +33,12 @@ az ad app update --id "${API_APP_ID}" --identifier-uris "api://${API_APP_ID}"
 
 SCOPE_ID=$(python3 -c "import uuid; print(uuid.uuid4())")
 
+# requestedAccessTokenVersion must be 2: the server (workday_mcp/auth/jwt_validator.py)
+# and the APIM validate-jwt policy both validate against the v2 issuer
+# (https://login.microsoftonline.com/{tid}/v2.0). Without this, Entra issues v1
+# tokens (iss: https://sts.windows.net/{tid}/) and every token fails validation.
 az ad app update --id "${API_APP_ID}" --set api="{
+  \"requestedAccessTokenVersion\": 2,
   \"oauth2PermissionScopes\": [
     {
       \"id\": \"${SCOPE_ID}\",
@@ -66,6 +71,8 @@ CLIENT_SECRET=$(az ad app credential reset \
 echo ""
 echo "=== API app registration complete ==="
 echo "ENTRA_CLIENT_ID (=ENTRA_API_AUDIENCE): ${API_APP_ID}"
+echo "  (v2 access tokens carry the client ID GUID as 'aud', so ENTRA_API_AUDIENCE"
+echo "   is this GUID - not api://${API_APP_ID})"
 echo "ENTRA_API_SCOPE: api://${API_APP_ID}/access_as_user"
 echo "ENTRA_CLIENT_SECRET: ${CLIENT_SECRET}"
 echo ""

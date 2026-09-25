@@ -8,6 +8,12 @@
       }
     }
   },
+  "extensions": {
+    "http": {
+      "_comment": "Empty routePrefix: AsgiFunctionApp forwards the full request path into the ASGI app, and the Starlette app's routes (/mcp, /.well-known/oauth-protected-resource) have no /api prefix.",
+      "routePrefix": ""
+    }
+  },
   "extensionBundle": {
     "id": "Microsoft.Azure.Functions.ExtensionBundle",
     "version": "[4.*, 5.0.0)"

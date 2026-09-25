@@ -80,6 +80,7 @@ az deployment group create \
   --template-file infra/main.bicep \
   --parameters entraTenantId=<tenant-id> \
                entraApiAudience=<workday-mcp-api-app-id> \
+               entraClientId=<workday-mcp-api-app-id> \
                entraApiScope=api://<workday-mcp-api-app-id>/access_as_user \
                mcpResourceUrl=https://<function-app-host>/mcp \
                workdayTenantBaseUrl=<workday-rest-base-url> \
@@ -87,6 +88,13 @@ az deployment group create \
                apimPublisherEmail=<you@example.com> \
                apimPublisherName="<Your Org>"
 ```
+
+`entraApiAudience` is the **client ID GUID** of the `workday-mcp-api` app, not
+its `api://` URI: the registration requests v2 access tokens
+(`requestedAccessTokenVersion: 2`), and v2 tokens carry the client ID GUID in
+`aud`. `entraClientId` is the client ID used for the OBO confidential-client
+flow; in this single-app design it is the same GUID, and it defaults to
+`entraApiAudience` if omitted.
 
 APIM's policy needs the deployed Function App's host key to call it directly.
 After the first deploy, fetch it and redeploy so APIM can present it:
@@ -102,6 +110,17 @@ az deployment group create \
   --template-file infra/main.bicep \
   --parameters @<same params as above> functionAppHostKey="${FUNCTION_KEY}"
 ```
+
+### Host header allow-list
+
+The MCP streamable-HTTP transport enforces DNS-rebinding protection, which only
+accepts requests whose `Host` header is on an allow-list. By default the server
+allows the host of `MCP_RESOURCE_URL` (plus loopback addresses for local dev),
+so keep `mcpResourceUrl` pointed at the host that actually receives the
+request — APIM forwards to the Function App with the Function App's host name.
+If the public resource URL and the receiving host differ, set the
+`MCP_ALLOWED_HOSTS` app setting to a comma-separated list of the `Host` values
+to accept; anything else gets HTTP 421.
 
 Store the Entra client secret and Workday client ID/secret in the deployed
 Key Vault under the secret names referenced by
