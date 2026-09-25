@@ -1,10 +1,15 @@
 import pytest
 
-from workday_mcp.auth.identity_context import RequestIdentity, reset_current_identity, set_current_identity
+from workday_mcp.auth.identity_context import (
+    NoIdentityError,
+    RequestIdentity,
+    reset_current_identity,
+    set_current_identity,
+)
 from workday_mcp.tools.get_organization import get_organization
 from workday_mcp.tools.get_worker import get_worker
 from workday_mcp.tools.get_worker_time_off import get_worker_time_off
-from workday_mcp.tools.search_workers import search_workers
+from workday_mcp.tools.search_workers import MAX_SEARCH_LIMIT, search_workers
 from workday_mcp.workday.models import OrganizationInfo, TimeOffEntry, Worker
 
 
@@ -15,6 +20,7 @@ class FakeWorkdayClient:
         self.org = OrganizationInfo(organization_id="org-1", name="Engineering", manager_worker_id="w-9", member_worker_ids=["w-1"])
         self.search_results = [self.worker]
         self.last_worker_id_lookup = None
+        self.last_search_limit = None
 
     def get_worker(self, upn):
         assert upn == "alice@example.com"
@@ -30,6 +36,7 @@ class FakeWorkdayClient:
 
     def search_workers(self, query, limit=20):
         assert query == "ali"
+        self.last_search_limit = limit
         return self.search_results
 
 
@@ -66,3 +73,24 @@ def test_search_workers_returns_list(identity_ctx):
     client = FakeWorkdayClient()
     result = search_workers(client, "ali")
     assert result[0]["worker_id"] == "w-1"
+    assert client.last_search_limit == 20
+
+
+def test_search_workers_requires_an_authenticated_identity():
+    """The tool must fail closed if the auth middleware never resolved an identity."""
+    client = FakeWorkdayClient()
+    with pytest.raises(NoIdentityError):
+        search_workers(client, "ali")
+    assert client.last_search_limit is None, "Workday must not be queried without an identity"
+
+
+def test_search_workers_clamps_caller_supplied_limit(identity_ctx):
+    client = FakeWorkdayClient()
+    search_workers(client, "ali", limit=100_000)
+    assert client.last_search_limit == MAX_SEARCH_LIMIT
+
+
+def test_search_workers_leaves_limits_under_the_cap_alone(identity_ctx):
+    client = FakeWorkdayClient()
+    search_workers(client, "ali", limit=5)
+    assert client.last_search_limit == 5
