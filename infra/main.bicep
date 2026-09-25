@@ -7,8 +7,11 @@ param location string = resourceGroup().location
 @description('Entra ID tenant ID.')
 param entraTenantId string
 
-@description('Entra ID API app (workday-mcp-api) client ID / audience.')
+@description('Expected `aud` claim of inbound access tokens. With requestedAccessTokenVersion=2 (see scripts/register-entra-apps.sh) Entra issues the app\'s client ID GUID as the audience, so in the single-app design this is the workday-mcp-api app\'s client ID GUID - not its api:// URI.')
 param entraApiAudience string
+
+@description('Client ID of the Entra ID app used as the OBO confidential client. Defaults to entraApiAudience because the single-app design uses one registration for both roles; override to split them.')
+param entraClientId string = entraApiAudience
 
 @description('Entra ID API app scope, e.g. api://workday-mcp/access_as_user.')
 param entraApiScope string
@@ -32,8 +35,11 @@ param apimPublisherName string
 @secure()
 param functionAppHostKey string = ''
 
-var storageAccountName = toLower(replace('${baseName}stg${uniqueString(resourceGroup().id)}', '-', ''))
-var keyVaultName = '${baseName}-kv-${uniqueString(resourceGroup().id)}'
+// Storage accounts max out at 24 chars (lowercase alphanumeric only) and Key
+// Vaults at 24 chars, so these deliberately do NOT embed baseName - only a
+// short fixed prefix plus uniqueString() (13 chars today, but keep headroom).
+var storageAccountName = toLower('wdmcp${uniqueString(resourceGroup().id)}')
+var keyVaultName = 'kv-${uniqueString(resourceGroup().id)}'
 var keyVaultUri = 'https://${keyVaultName}.vault.azure.net/'
 var functionAppName = '${baseName}-func-${uniqueString(resourceGroup().id)}'
 var apimName = '${baseName}-apim-${uniqueString(resourceGroup().id)}'
@@ -66,6 +72,7 @@ module functionApp 'modules/function-app.bicep' = {
     appInsightsConnectionString: appInsights.properties.ConnectionString
     entraTenantId: entraTenantId
     entraApiAudience: entraApiAudience
+    entraClientId: entraClientId
     entraApiScope: entraApiScope
     mcpResourceUrl: mcpResourceUrl
     workdayTenantBaseUrl: workdayTenantBaseUrl

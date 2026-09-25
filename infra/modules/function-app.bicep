@@ -16,8 +16,11 @@ param appInsightsConnectionString string
 @description('Entra ID tenant ID.')
 param entraTenantId string
 
-@description('Entra ID API app (workday-mcp-api) client ID / audience.')
+@description('Expected `aud` claim of inbound access tokens. With requestedAccessTokenVersion=2 (see scripts/register-entra-apps.sh) Entra issues the app\'s client ID GUID as the audience, so in the single-app design this is the same GUID as entraClientId.')
 param entraApiAudience string
+
+@description('Client ID of the Entra ID app used as the OBO confidential client. In the single-app design this is the same GUID as entraApiAudience, but it is a distinct setting.')
+param entraClientId string
 
 @description('Entra ID API app scope, e.g. api://workday-mcp/access_as_user.')
 param entraApiScope string
@@ -67,7 +70,7 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
         { name: 'ENTRA_TENANT_ID', value: entraTenantId }
         { name: 'ENTRA_API_AUDIENCE', value: entraApiAudience }
         { name: 'ENTRA_API_SCOPE', value: entraApiScope }
-        { name: 'ENTRA_CLIENT_ID', value: entraApiAudience }
+        { name: 'ENTRA_CLIENT_ID', value: entraClientId }
         { name: 'ENTRA_CLIENT_SECRET', value: '@Microsoft.KeyVault(SecretUri=${keyVaultUri}secrets/entra-client-secret/)' }
         { name: 'MCP_RESOURCE_URL', value: mcpResourceUrl }
         { name: 'WORKDAY_TENANT_BASE_URL', value: workdayTenantBaseUrl }

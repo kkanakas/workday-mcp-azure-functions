@@ -68,7 +68,7 @@ resource apiPolicy 'Microsoft.ApiManagement/service/apis/policies@2023-05-01-pre
   <inbound>
     <base />
     <choose>
-      <when condition="@(context.Request.Url.Path.EndsWith("/.well-known/oauth-protected-resource"))">
+      <when condition="@(context.Request.Url.Path.EndsWith(&quot;/.well-known/oauth-protected-resource&quot;))">
       </when>
       <otherwise>
         <validate-jwt header-name="Authorization" failed-validation-httpcode="401" require-expiration-time="true" require-signed-tokens="true">

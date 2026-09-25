@@ -1,4 +1,6 @@
-@description('Name of the Key Vault.')
+@description('Name of the Key Vault (must be globally unique, 3-24 chars).')
+@minLength(3)
+@maxLength(24)
 param keyVaultName string
 
 @description('Azure region.')

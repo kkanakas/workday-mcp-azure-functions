@@ -1,4 +1,6 @@
 @description('Name of the storage account (must be globally unique, lowercase, 3-24 chars).')
+@minLength(3)
+@maxLength(24)
 param storageAccountName string
 
 @description('Azure region for the storage account.')
